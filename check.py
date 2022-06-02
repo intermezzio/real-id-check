@@ -2,21 +2,49 @@ from bs4 import BeautifulSoup
 import requests
 from send import send_mail
 import time
+from collections import OrderedDict
+import json
+import re
+from icecream import ic
+import pandas as pd
 
-URL = "https://telegov.njportal.com/njmvc/AppointmentWizard/12/135" # freehold DMV
+URL = "https://telegov.njportal.com/njmvc/AppointmentWizard/12"
+locs_i_care_about = {
+	"Eatontown - Real ID",
+	"Freehold - Real ID",
+	"Elizabeth - Real ID"
+}
+
+def get_var(soup, var_name):
+	pattern = re.compile(f"var {var_name} " + r"=(.*?)[;\n]")
+	script_tag = soup.find("script", text=pattern)
+	var_data = json.loads(pattern.search(script_tag.text).group(1))
+	return var_data
+
+def parse_status(status_text):
+	return status_text != "No Appointments Available"
 
 def check_availablility():
 	webpage = requests.get(URL)
 	soup = BeautifulSoup(webpage.content, "lxml")
 
-	text = soup.get_text()
+	location_data = get_var(soup, "locationData")
+	time_data = get_var(soup, "timeData")
 
-	appt_available = "Currently, there are no appointments available at this location. Please try later in the case of a cancellation or try again over the next few days as more appointment times become available." not in text
+	id_to_location = {x["LocAppointments"][0]["LocationId"]: x["Name"] for x in location_data}
 
-	print(appt_available)
+	time_df = pd.DataFrame.from_dict(time_data)
+	time_df["Location"] = time_df["LocationId"].map(id_to_location)
+	time_df["isAvailable"] = time_df["FirstOpenSlot"].apply(parse_status)
 
-	if appt_available:
-		send_mail(body=f"Schedule here:\n\n{URL}")
+	time_df.to_csv("locationStatus.csv", index=False)
+
+	available = set(time_df.loc[time_df["isAvailable"] == True, "Location"]) & locs_i_care_about
+
+	if available:
+		send_mail(body=f"{available} available!\n\nSchedule here: {URL}")
+
+	return available
 
 if __name__ == "__main__":
 	while True:
